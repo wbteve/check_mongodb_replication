@@ -19,30 +19,29 @@ class CheckMongoDBReplication(Plugin):
         timeout = None if self.options.timeout == 0 else self.options.timeout
 
         connection = pymongo.connection.Connection(host=host, port=self.options.port,
-                                                   network_timeout=timeout)
+                                                   network_timeout=timeout, slave_okay=True)
 
-
-        # If we're the master, then there is no check to do
-        if connection["admin"].command("ismaster")["ismaster"]:
-            return Response(pynagios.OK, "Master. Of course we're up to date.")
-
-        status = connection["admin"].command("replGetStatus")
+        status = connection["admin"].command("replSetGetStatus")
         primary     = None
         this_server = None
 
         for member in status["members"]:
             if member["stateStr"] == "PRIMARY":
                 primary = member
-            elif member["self"]:
+            if "self" in member and member["self"]:
                 this_server = member
 
         if primary is None:
             return Response(pynagios.CRITICAL, "Primary could not be found in the replica set.")
         elif this_server is None:
             return Response(pynagios.CRITICAL, "This server could not be found in the replica set.")
+        elif primary["name"] == this_server["name"]:
+            return Response(pynagios.OK, "Master. Of course we're up to date.")
 
-        difference = primary["optime"]["t"] - this_server["optime"]["t"]
-        seconds    = difference / 1000
+        # Determine the lag time in seconds. Sometimes this is less than 0
+        # which we can just assume to mean 0 (up to date).
+        seconds = primary["optime"].time - this_server["optime"].time
+        if seconds < 0: seconds = 0
         return self.response_for_value(seconds, "Replication lag: %d seconds" % seconds)
 
 if __name__ == '__main__':
